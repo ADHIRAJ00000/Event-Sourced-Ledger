@@ -1,0 +1,28 @@
+databases:
+  - name: ledger-db
+    plan: free
+    databaseName: ledger_db
+    user: ledger
+
+services:
+  - type: web
+    name: event-sourced-ledger
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: LEDGER_DATABASE_URL
+        fromDatabase:
+          name: ledger-db
+          property: connectionString
+      - key: LEDGER_SECRET_KEY
+        generateValue: true
+      - key: LEDGER_ALGORITHM
+        value: HS256
+      - key: LEDGER_ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: LEDGER_MAX_TRANSACTION_AMOUNT
+        value: "1000000.0"
+      - key: LEDGER_DEBUG
+        value: "false"

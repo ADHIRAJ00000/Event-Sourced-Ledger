@@ -40,6 +40,18 @@ class Settings(BaseSettings):
                 return True
         return value
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        # Managed Postgres providers (Render, Heroku, etc.) hand out plain
+        # postgres(ql):// URLs, but SQLAlchemy's async engine needs the
+        # +asyncpg driver suffix explicitly.
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
+
 
 @lru_cache()
 def get_settings() -> Settings:
