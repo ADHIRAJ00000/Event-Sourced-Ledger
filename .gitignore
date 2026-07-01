@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.env
+ledger.db
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+htmlcov/
+.coverage
+Ledger_Interview_Prep.pdf

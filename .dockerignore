@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.git
+.pytest_cache/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+htmlcov/
+ledger.db
+venv/
+{app/
