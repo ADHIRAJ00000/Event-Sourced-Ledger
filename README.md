@@ -1,64 +1,31 @@
 # Event-Sourced Ledger API
 
-A **production-grade double-entry bookkeeping system** built with FastAPI and SQLAlchemy.
+A double-entry bookkeeping backend built with FastAPI and async SQLAlchemy. Balances are never stored directly — every balance change is recorded as an immutable event, and the current balance is computed from the event history.
 
-> **Every balance change is an immutable event. Balances are never stored — only derived.**
-
----
-
-## Architecture
+## How it works
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    FastAPI App                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────┐   │
-│  │  /auth   │  │/accounts │  │  /transactions │   │
-│  └────┬─────┘  └────┬─────┘  └───────┬────────┘   │
-│       └─────────────┼────────────────┘             │
-│                     ▼                               │
-│              LedgerService (domain)                 │
-│           ┌────────────────────┐                    │
-│           │  Invariant checks: │                    │
-│           │  - Double-entry ✓  │                    │
-│           │  - Overdraft ✓     │                    │
-│           │  - Atomicity ✓     │                    │
-│           └─────────┬──────────┘                   │
-│                     ▼                               │
-│         AccountRepo / TransactionRepo               │
-│                     ▼                               │
-│  ┌──────────────────────────────────────────────┐  │
-│  │             PostgreSQL / SQLite              │  │
-│  │                                              │  │
-│  │  accounts          ledger_events (IMMUTABLE) │  │
-│  │  transactions      account_snapshots         │  │
-│  └──────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+Request → API routes → LedgerService → Repositories → DB
 ```
 
-## Key Design Decisions
+- `/auth`, `/accounts`, `/transactions` routes contain no business logic
+- `LedgerService` holds all domain rules: double-entry validation, overdraft checks, atomic commits
+- Repositories handle queries, including balance computation from events
+- Works with PostgreSQL (Docker) or SQLite (local dev)
 
-### 1. No `balance` column anywhere
-The `accounts` table has **no balance column**. Every balance is computed by `SUM(credits) - SUM(debits)` over the `ledger_events` table. This is event sourcing: state is always derived from history.
+## Design notes
 
-### 2. `ledger_events` is append-only
-No `UPDATE`, no `DELETE` ever touches this table. The DB constraint `CHECK (amount > 0)` and a unique `(account_id, sequence)` index enforce this at the database level.
+**No balance column.** The `accounts` table doesn't store a balance. It's always computed as `SUM(credits) - SUM(debits)` over `ledger_events`. State is derived from history, never stored as mutable data.
 
-### 3. Double-entry enforced at two layers
-- **Schema layer (Pydantic)**: `ManualJournalRequest` has a `@model_validator` that verifies `debits == credits` before the request even reaches the service.
-- **Service layer**: `_assert_double_entry()` re-verifies before every commit (belt-and-suspenders).
+**Append-only events.** Nothing ever updates or deletes rows in `ledger_events`. A `CHECK (amount > 0)` constraint and a unique `(account_id, sequence)` index enforce this at the DB level, not just in application code.
 
-### 4. Atomic transactions
-All legs of a transaction (the `LedgerEntry` rows) are written inside a single SQLAlchemy session with a single `await session.commit()`. A failure on any leg rolls back all legs — no partial transfers.
+**Double-entry checked twice.** Pydantic validates `debits == credits` on the request schema, and the service re-checks before commit. If either fails, nothing is written.
 
-### 5. Optimistic concurrency via `(account_id, sequence)`
-Each account's event stream has a monotonically increasing sequence number. The unique constraint `uq_ledger_account_sequence` means concurrent writes to the same account will cause one to fail with an `IntegrityError` rather than silently producing a lost update.
+**Atomic transactions.** All legs of a transfer go into one SQLAlchemy session with a single commit. If any leg fails, everything rolls back — no partial transfers.
 
-### 6. Snapshot acceleration
-`account_snapshots` stores a materialized checkpoint. The balance query becomes:  
-`balance = snapshot.balance + SUM(events after snapshot.at_sequence)`  
-instead of replaying the full history. Snapshots are never the source of truth — they can always be discarded and recomputed.
+**Concurrency handling.** Each account's events get a monotonically increasing sequence number. The unique constraint on `(account_id, sequence)` means two concurrent writes to the same account can't both succeed silently — one fails with an `IntegrityError` instead of causing a lost update.
 
----
+**Snapshots.** Replaying thousands of events per balance query gets slow, so `account_snapshots` stores checkpoints. Balance = snapshot value + events after the snapshot. Snapshots can be deleted and recomputed anytime since events remain the source of truth.
 
 ## Endpoints
 
@@ -75,165 +42,106 @@ instead of replaying the full history. Snapshots are never the source of truth �
 | POST | `/api/v1/accounts` | Open account |
 | GET | `/api/v1/accounts` | List your accounts |
 | GET | `/api/v1/accounts/{id}` | Account details |
-| GET | `/api/v1/accounts/{id}/balance` | Current balance (event-derived) |
-| GET | `/api/v1/accounts/{id}/balance/history?as_of=` | **Point-in-time balance** |
-| GET | `/api/v1/accounts/{id}/audit` | **Full audit trail with running balance** |
-| POST | `/api/v1/accounts/{id}/snapshots` | Materialise snapshot |
+| GET | `/api/v1/accounts/{id}/balance` | Current balance |
+| GET | `/api/v1/accounts/{id}/balance/history?as_of=` | Balance at a past timestamp |
+| GET | `/api/v1/accounts/{id}/audit` | Full event history with running balance |
+| POST | `/api/v1/accounts/{id}/snapshots` | Create snapshot |
 | DELETE | `/api/v1/accounts/{id}` | Close account |
 
 ### Transactions
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/transactions/transfer` | Two-leg transfer |
-| POST | `/api/v1/transactions/journal` | N-leg manual journal |
+| POST | `/api/v1/transactions/journal` | N-leg manual journal entry |
 | GET | `/api/v1/transactions/{id}` | Get transaction |
-| POST | `/api/v1/transactions/{id}/reverse` | Reverse (chargeback/correction) |
+| POST | `/api/v1/transactions/{id}/reverse` | Reverse a transaction |
 | GET | `/api/v1/transactions/account/{id}` | Paginated account history |
 
----
+## Setup
 
-## Quick Start
-
-### Local (SQLite — no DB required)
+Local with SQLite (no DB needed):
 
 ```bash
-# Clone and setup
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-
-# Run
 uvicorn app.main:app --reload
-
-# Browse API docs
-open http://localhost:8000/docs
 ```
 
-### Docker (PostgreSQL)
+API docs at http://localhost:8000/docs
+
+With Docker (PostgreSQL):
 
 ```bash
 docker compose up --build -d
-open http://localhost:8000/docs
 ```
 
-### Run tests
+Tests:
 
 ```bash
 pytest tests/ -v
 ```
 
----
-
-## Example Flow
+## Example usage
 
 ```bash
-# 1. Register
+# Register and login
 curl -X POST http://localhost:8000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username": "alice", "email": "alice@example.com", "password": "securepass"}'
 
-# 2. Login
 TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   -d "username=alice&password=securepass" | jq -r .access_token)
 
-# 3. Open two accounts
+# Open two accounts
 CHECKING=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"Checking","account_type":"ASSET","currency":"USD","overdraft_limit":"0"}' \
   | jq -r .id)
 
-SAVINGS=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
+EQUITY=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"Savings","account_type":"ASSET","currency":"USD","overdraft_limit":"0"}' \
+  -d '{"name":"Opening Balance","account_type":"EQUITY","currency":"USD","overdraft_limit":"0"}' \
   | jq -r .id)
 
-# 4. Fund checking via journal (debit revenue source, credit checking)
+# Fund checking with a two-leg journal entry (double-entry requires both sides)
 curl -X POST http://localhost:8000/api/v1/transactions/journal \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
     \"description\": \"Initial deposit\",
     \"legs\": [
+      {\"account_id\": \"$EQUITY\",   \"entry_type\": \"DEBIT\",  \"amount\": \"5000\", \"currency\": \"USD\"},
       {\"account_id\": \"$CHECKING\", \"entry_type\": \"CREDIT\", \"amount\": \"5000\", \"currency\": \"USD\"}
     ]
   }"
-# Note: This would fail double-entry check — both legs are required. Use transfer instead.
 
-# 5. Transfer
-curl -X POST http://localhost:8000/api/v1/transactions/transfer \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"from_account_id\": \"$CHECKING\",
-    \"to_account_id\": \"$SAVINGS\",
-    \"amount\": \"1000\",
-    \"currency\": \"USD\",
-    \"description\": \"Monthly savings\"
-  }"
-
-# 6. Check audit trail
+# Check the audit trail
 curl http://localhost:8000/api/v1/accounts/$CHECKING/audit \
   -H "Authorization: Bearer $TOKEN"
 
-# 7. Point-in-time balance
+# Balance at a point in time
 curl "http://localhost:8000/api/v1/accounts/$CHECKING/balance/history?as_of=2024-01-01T00:00:00Z" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
----
-
-## Project Structure
+## Project structure
 
 ```
 ledger/
 ├── app/
-│   ├── api/v1/
-│   │   ├── auth.py          # Auth endpoints
-│   │   ├── accounts.py      # Account CRUD + balance/audit
-│   │   ├── transactions.py  # Transfer, journal, reversal
-│   │   └── health.py
-│   ├── core/
-│   │   ├── config.py        # Settings (pydantic-settings)
-│   │   ├── exceptions.py    # Domain exceptions
-│   │   └── security.py      # JWT + password hashing
-│   ├── db/
-│   │   └── session.py       # Async SQLAlchemy engine
-│   ├── models/
-│   │   └── ledger.py        # ORM models (IMMUTABLE ledger_events)
-│   ├── repositories/
-│   │   ├── account_repository.py    # Balance computation lives here
-│   │   └── transaction_repository.py
-│   ├── schemas/
-│   │   └── ledger.py        # Pydantic v2 request/response schemas
-│   ├── services/
-│   │   ├── ledger_service.py  # All domain logic + invariants
-│   │   └── auth_service.py
-│   └── main.py              # App factory
-├── tests/
-│   └── test_ledger.py       # 26 integration tests
+│   ├── api/v1/          # Route handlers (auth, accounts, transactions)
+│   ├── core/            # Config, security (JWT), domain exceptions
+│   ├── db/              # Async SQLAlchemy engine/session
+│   ├── models/          # ORM models
+│   ├── repositories/    # DB queries, balance computation
+│   ├── schemas/         # Pydantic request/response models
+│   ├── services/        # Domain logic and invariants
+│   └── main.py
+├── tests/               # 26 integration tests
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
-
----
-
-## What Makes This Resume-Worthy
-
-| Concept | How it's demonstrated |
-|---------|----------------------|
-| **Event sourcing** | `ledger_events` is append-only; balances derived by replay |
-| **Double-entry accounting** | Enforced at schema AND service layer |
-| **Transactional integrity** | Single `session.commit()` for all legs |
-| **Optimistic concurrency** | `UNIQUE(account_id, sequence)` prevents lost updates |
-| **Point-in-time queries** | `balance/history?as_of=` replays up to a timestamp |
-| **Audit trail** | Full event stream with running balance reconstruction |
-| **Snapshotting** | `account_snapshots` accelerates replay without losing correctness |
-| **Domain exceptions** | Rich exception hierarchy, handled at API boundary |
-| **Async Python** | Fully async with `asyncpg` / `aiosqlite` |
-| **JWT Auth** | OAuth2 password flow, protected endpoints |
-| **Layered architecture** | API → Service → Repository → ORM; no logic in routes |
-| **Test coverage** | 26 integration tests covering all invariants |
