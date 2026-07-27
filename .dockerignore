@@ -11,4 +11,3 @@ dist/
 htmlcov/
 ledger.db
 venv/
-{app/
