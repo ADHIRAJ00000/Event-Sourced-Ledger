@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5b8dff"/>
+      <stop offset="100%" stop-color="#7c5bff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="64" height="64" rx="14" fill="#0f1420"/>
+
+  <!-- ledger book page -->
+  <rect x="15" y="12" width="34" height="40" rx="3" fill="#e8ecf7"/>
+
+  <!-- spine (double-entry divider) -->
+  <rect x="31" y="12" width="2" height="40" fill="url(#g)"/>
+
+  <!-- debit rows (left) -->
+  <rect x="19" y="20" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="19" y="27" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="19" y="34" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="19" y="41" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+
+  <!-- credit rows (right) -->
+  <rect x="36" y="20" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="36" y="27" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="36" y="34" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+  <rect x="36" y="41" width="9" height="2.4" rx="1.2" fill="#8b93ab"/>
+
+  <!-- balance accent dot -->
+  <circle cx="32" cy="12" r="4.5" fill="url(#g)"/>
+</svg>
