@@ -514,6 +514,7 @@ function renderAccountBody(d) {
         <h2>Audit trail</h2>
         <p class="hint">Every event that ever touched this account, in order, with the running balance after each one. This is the permanent record — nothing here can be edited.</p>
         ${audit.entries.length === 0 ? `<div class="empty-state">No activity yet.</div>` : `
+        <div class="table-wrap">
         <table>
           <thead><tr><th>#</th><th>When</th><th>Type</th><th>Amount</th><th>Running balance</th></tr></thead>
           <tbody>
@@ -528,6 +529,7 @@ function renderAccountBody(d) {
             `).join("")}
           </tbody>
         </table>
+        </div>
         `}
       </div>
 
@@ -535,6 +537,7 @@ function renderAccountBody(d) {
         <h2>Transactions</h2>
         <p class="hint">Click one to see both legs of the double-entry, or reverse it.</p>
         ${txHistory.items.length === 0 ? `<div class="empty-state">No transactions yet.</div>` : `
+        <div class="table-wrap">
         <table>
           <thead><tr><th>When</th><th>Description</th><th>Status</th></tr></thead>
           <tbody>
@@ -547,6 +550,7 @@ function renderAccountBody(d) {
             `).join("")}
           </tbody>
         </table>
+        </div>
         `}
       </div>
     </div>
@@ -664,6 +668,7 @@ function renderModal() {
       <p class="hint mono">${tx.id}</p>
       <p><strong>${escapeHtml(tx.description)}</strong><br/>
       <span class="badge ${tx.status}">${tx.status}</span> · ${fmtDate(tx.created_at)}</p>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Account</th><th>Type</th><th>Amount</th></tr></thead>
         <tbody>
@@ -676,6 +681,7 @@ function renderModal() {
           `).join("")}
         </tbody>
       </table>
+      </div>
       ${tx.status === "COMMITTED" ? `<button class="btn danger block" onclick="handleReverse()">Reverse this transaction</button>` : `<p class="hint" style="margin-top:12px;">This transaction has already been reversed or is not eligible for reversal.</p>`}
     `;
   }
