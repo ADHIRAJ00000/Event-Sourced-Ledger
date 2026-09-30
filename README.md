@@ -1,6 +1,10 @@
 # Event-Sourced Ledger API
 
-A double-entry bookkeeping backend built with FastAPI and async SQLAlchemy. Balances are never stored directly — every balance change is recorded as an immutable event, and the current balance is computed from the event history.
+A double-entry bookkeeping backend built with FastAPI and async SQLAlchemy. Balances are never stored. Every change is an immutable event, and the current balance is computed from the event history.
+
+## Why I built this
+
+I wanted to understand how payment systems keep money consistent under concurrent writes, so I built the core of one from scratch instead of another CRUD app. The focus is on correctness: derived balances, atomic multi-leg transactions, and a full audit trail.
 
 ## How it works
 
@@ -9,23 +13,34 @@ Request → API routes → LedgerService → Repositories → DB
 ```
 
 - `/auth`, `/accounts`, `/transactions` routes contain no business logic
-- `LedgerService` holds all domain rules: double-entry validation, overdraft checks, atomic commits
+- `LedgerService` holds the domain rules: double-entry validation, overdraft checks, atomic commits
 - Repositories handle queries, including balance computation from events
-- Works with PostgreSQL (Docker) or SQLite (local dev)
+- Runs on PostgreSQL (Docker) or SQLite (local dev)
 
-## Design notes
+## Design decisions
 
-**No balance column.** The `accounts` table doesn't store a balance. It's always computed as `SUM(credits) - SUM(debits)` over `ledger_events`. State is derived from history, never stored as mutable data.
+**No balance column.** The `accounts` table has no balance. It is always `SUM(credits) - SUM(debits)` over `ledger_events`, so state is derived from history and can't drift out of sync.
 
-**Append-only events.** Nothing ever updates or deletes rows in `ledger_events`. A `CHECK (amount > 0)` constraint and a unique `(account_id, sequence)` index enforce this at the DB level, not just in application code.
+**Append-only events.** The application has no code path that updates or deletes rows in `ledger_events`. A `CHECK (amount > 0)` constraint and a unique `(account_id, sequence)` index protect data validity and ordering. Note that append-only is enforced in application code, not by the database itself. Enforcing it at the DB level (Postgres trigger or `REVOKE UPDATE, DELETE`) is a planned improvement.
 
-**Double-entry checked twice.** Pydantic validates `debits == credits` on the request schema, and the service re-checks before commit. If either fails, nothing is written.
+**Double-entry checked twice.** Pydantic checks `debits == credits` on the request schema, and the service re-checks before commit. If either check fails, nothing is written.
 
-**Atomic transactions.** All legs of a transfer go into one SQLAlchemy session with a single commit. If any leg fails, everything rolls back — no partial transfers.
+**Atomic transactions.** All legs of a transaction go through one SQLAlchemy session and a single commit. If any leg fails, everything rolls back, so there are no partial transfers.
 
-**Concurrency handling.** Each account's events get a monotonically increasing sequence number. The unique constraint on `(account_id, sequence)` means two concurrent writes to the same account can't both succeed silently — one fails with an `IntegrityError` instead of causing a lost update.
+**Concurrency.** Each account's events carry an increasing sequence number. The unique `(account_id, sequence)` constraint means two concurrent writes to the same account can't both succeed. The losing write raises an `IntegrityError` and is rejected instead of silently overwriting the other (no lost updates).
 
-**Snapshots.** Replaying thousands of events per balance query gets slow, so `account_snapshots` stores checkpoints. Balance = snapshot value + events after the snapshot. Snapshots can be deleted and recomputed anytime since events remain the source of truth.
+**Snapshots.** Replaying thousands of events per balance query gets slow, so `account_snapshots` stores checkpoints. Balance = snapshot value + events after it. Snapshots can be deleted and rebuilt at any time because events remain the source of truth.
+
+## Sign convention
+
+Balance is computed as `credits - debits` for every account type. This means an `ASSET` account like Checking goes **up** on a `CREDIT`, which is the opposite of textbook accounting where assets increase on debit. I kept one uniform formula to keep the balance logic simple. To get standard accounting behavior, the sign would need to be flipped per account type in the repository layer.
+
+## Limitations
+
+- Append-only is not yet enforced at the database level
+- Uniform sign convention across account types (see above)
+- Conflicting concurrent writes to the same account are rejected, so the client has to retry
+- Single-currency accounts only: each leg carries a currency, but there is no conversion logic
 
 ## Endpoints
 
@@ -106,7 +121,8 @@ EQUITY=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
   -d '{"name":"Opening Balance","account_type":"EQUITY","currency":"USD","overdraft_limit":"0"}' \
   | jq -r .id)
 
-# Fund checking with a two-leg journal entry (double-entry requires both sides)
+# Fund checking with a two-leg journal entry
+# (CREDIT increases balance here, see "Sign convention" above)
 curl -X POST http://localhost:8000/api/v1/transactions/journal \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
